@@ -60,7 +60,11 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
         self.gleu=nn.GELU(approximate='tanh')
         self.c_proj=nn.Linear(4*config.n_embd, config.n_embd)
-
+    def forward(self, x):
+        x=self.c_fc(x)
+        x=self.gleu(x)
+        x=self.c_proj(x)
+        return x
 
 
 class Block(nn.Module):
@@ -99,6 +103,30 @@ class GPT(nn.Module):
         ))
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+    
+    def forward(self,idx):
+        # idx is of shape (B,T)
+        B,T=idx.size()
+        assert T<=self.config.block_size, "Cannot forward, model block size is exhausted."
+        # forward the token and position embeddings
+        pos= torch.arange(0, T, dtype=torch.long, device=idx.device) # shape (T)
+        pos_emb=self.transformer.wpe(pos) # shape (T, C)
+        token_emb=self.transformer.wte(idx) # shape (B, T, C)
+        x=token_emb+pos_emb
+
+        # forward the blocks of the transformer
+        for block in self.transformer.h:
+            x=block(x)
+        # forward the final layernorm and the classifier
+        x=self.transformer.ln_f(x)
+        logits=self.lm_head(x)
+        # forward the final layernorm and the classifier
+        x=self.transformer.ln_f(x)
+        logits=self.lm_head(x) # shape (B, T, vocab_size)
+        return logits
+
+
+
 
     @classmethod
     def from_pretrained(cls,model_type):
@@ -151,7 +179,54 @@ class GPT(nn.Module):
         return model
 
 
+# ---------------------------------------------------------------
+device='cpu'# 'cuda' if torch.cuda.is_available() else 'cpu'
+num_return_sequences=5
+max_length=30
 
-    
+
 model=GPT.from_pretrained('gpt2')
 print("didn't crash yay!")
+model.eval()
+model.to(device)
+
+# prefix tokens
+import tiktoken
+enc=tiktoken.get_encoding("gpt2")
+tokens=enc.encode("hello, i am a language model,")
+tokens=torch.tensor(tokens,dtype=torch.long) # (8, )
+tokens=tokens.unsqueeze(0).repeat(num_return_sequences,1) # (5, 8)
+x=tokens.to(device)
+
+
+# generate! right now x is (B,T) where B=5, T=8
+# set the seed to 42
+torch.manual_seed(42)
+if device=="cuda":
+    torch.cuda.manual_seed(42) 
+
+while x.size(1)<max_length:
+    # forward the model to get the logits
+    with torch.no_grad():
+        # forward
+        logits=model(x) # (B,T, vocab_size)_
+        # focus only on the last time step- take the logits at the last position ?
+        logits=logits[:, -1, :] # becomes (B, vocab_size)
+        # apply softmax to get probabilities
+        probs=F.softmax(logits, dim=-1)
+        # do top-k sampling of 50(huggingface pipeline default)
+        # topk_probs here becomes (5,50), topk_indices is (5,50)
+        
+        topk_probs, topk_indices = torch.topk(probs, k=50, dim=-1)
+        # select a token from teh top-k probabilities
+        idx=torch.multinomial(topk_probs, num_samples=1) # (B,1)
+        # gahter the corresponding indices
+        xcol=torch.gather(topk_indices, dim=-1, index=idx) # (B,1)
+        # append to the sequence
+        x=torch.cat((x, xcol), dim=1) # (B, T+1)
+
+# print the generated text
+for i in range(num_return_sequences):
+    tokens=x[i,:max_length].tolist()
+    decoded=enc.decode(tokens)
+    print(">",decoded)
