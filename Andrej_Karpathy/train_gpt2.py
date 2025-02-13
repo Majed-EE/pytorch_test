@@ -269,6 +269,8 @@ class DataLoadersLite:
 train_loader=DataLoadersLite(B=4, T=32) # 5 batches of 32 tokens each
 
 
+# torch.set_float32_matmul_precision("high")
+
 
 
 # token=enc.encode(data)
@@ -296,8 +298,10 @@ model.to(device)
 # print(logits.shape)
 # print(f"loss: {loss}")
 
+import time
 optimizer=torch.optim.AdamW(model.parameters(), lr=1e-3)
 for i in range (50):
+    t0=time.time()
     x,y=train_loader.next_batch()
     x=x.to(device)
     y=y.to(device)
@@ -305,7 +309,11 @@ for i in range (50):
     logits, loss=model(x, y)
     loss.backward()
     optimizer.step()
-    print(f"step {i}, loss: {loss.item()}")
+    # torch.cuda.synchronize() # wait for the GPU to finish work
+    t1=time.time()
+    dt=(t1-t0)*1000 # time difference in miliseconds
+    tokens_per_sec= (train_loader.B*train_loader.T)/(t1-t0)
+    print(f"step {i}, loss: {loss.item()}, dt: ({dt:.2f})ms, tol/sec: {tokens_per_sec}")
 
 
 import sys;sys.exit(0)
